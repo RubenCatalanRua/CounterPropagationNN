@@ -1,0 +1,24 @@
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore compiled files
+*.out
+*.o
+*.pyc
+*.class
+
+# Ignore virtual environments
+venv/
+__pycache__/
+
+# Ignore large datasets
+*.csv
+*.xlsx
+*.h5
+*.pkl
+
+# Ignore logs and temp files
+logs/
+*.log
+*.tmp
