@@ -188,7 +188,20 @@ class CPNNClassifier:
         self.ae_lr = ae_lr
         self.random_state = random_state
         self.verbose = verbose
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            print('LOADED CUDA')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print('LOADED MPS')
+        elif torch.xpu.is_available():
+            self.device = torch.device("xpu")
+            print('LOADED XPU')
+        else:
+            self.device = torch.device("cpu")
+            print('CPU ROLLING')
+
         self.cpnn_ = None
         self.autoencoder_ = None
         self.input_size_ = None
