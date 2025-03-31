@@ -355,10 +355,9 @@ class CounterPropagationNetwork(nn.Module):
         self.neighborhood_function = config.get("neighborhood_function", 'gaussian')
 
         if val_data is not None:
-            X_val, y_val = val_data
             criterion = nn.MSELoss()
         else:
-            criterion = nn.MSELoss()
+            criterion = None
 
         best_val_acc = -float('inf')
         best_val_loss = float('inf')
@@ -382,12 +381,6 @@ class CounterPropagationNetwork(nn.Module):
             else:
                 grossberg_optimizer = torch.optim.SGD(self.grossberg_net.parameters(), lr=grossberg_lr)
 
-        kohonen_scheduler = None
-        grossberg_scheduler = None
-        if config.get("kohonen_lr_scheduler") is not None:
-            kohonen_scheduler = config["kohonen_lr_scheduler"](kohonen_optimizer)
-        if config.get("grossberg_lr_scheduler") is not None:
-            grossberg_scheduler = config["grossberg_lr_scheduler"](grossberg_optimizer)
 
         for epoch in range(1, max_epochs + 1):
             decayed_neighborhood = max(1, initial_neighborhood - (initial_neighborhood - 1) * (epoch - 1) / (max_epochs - 1))
@@ -398,14 +391,24 @@ class CounterPropagationNetwork(nn.Module):
                                    learning_rate=kohonen_lr, neighborhood_size=decayed_neighborhood)
                 self.train_grossberg(batch_x, batch_y, optimizer=grossberg_optimizer,
                                      learning_rate=grossberg_lr)
-            self.eval()
+            total_loss = 0.0
+            total_correct = 0
+            total_samples = 0
             with torch.no_grad():
-                outputs, _ = self.forward(X_val.to(self.kohonen_weights.device))
-                pred_labels = torch.argmax(outputs, dim=1)
-                true_labels = torch.argmax(y_val.to(self.kohonen_weights.device), dim=1)
-                acc = (pred_labels == true_labels).float().mean().item() * 100
-                val_loss = criterion(outputs, y_val.to(self.kohonen_weights.device)).item() if criterion is not None else 0.0
-            logging.info(f"Epoch {epoch}/{max_epochs} | Validation Accuracy: {acc:.2f}% | Validation Loss: {val_loss:.6f}")
+                for batch_x, batch_y in val_data:
+                    batch_x = batch_x.to(self.kohonen_weights.device)
+                    batch_y = batch_y.to(self.kohonen_weights.device)
+                    outputs, _ = self.forward(batch_x)
+                    loss = criterion(outputs, batch_y)
+                    total_loss += loss.item() * batch_x.size(0)
+                    
+                    pred_labels = torch.argmax(outputs, dim=1)
+                    true_labels = torch.argmax(batch_y, dim=1)
+                    total_correct += (pred_labels == true_labels).sum().item()
+                    total_samples += batch_x.size(0)
+            avg_loss = total_loss / total_samples
+            acc = (total_correct / total_samples) * 100
+            logging.info(f"Epoch {epoch}/{max_epochs} | Validation Accuracy: {acc:.2f}% | Validation Loss: {avg_loss:.6f}")
 
             if early_stopping:
                 if acc > best_val_acc:
@@ -414,8 +417,8 @@ class CounterPropagationNetwork(nn.Module):
                 else:
                     no_improve_counter += 1
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
+                if avg_loss < best_val_loss:
+                    best_val_loss = avg_loss
                     error_increase_counter = 0
                 else:
                     error_increase_counter += 1
@@ -426,18 +429,6 @@ class CounterPropagationNetwork(nn.Module):
                     logging.warning(f"Early stopping triggered: Validation loss did not decrease for {error_increase_counter} epochs.")
                     break
             self.train()
-
-            '''
-            if kohonen_scheduler is not None:
-                kohonen_scheduler.step()
-            if grossberg_scheduler is not None:
-                grossberg_scheduler.step()
-
-            if verbose and log_interval and epoch % log_interval == 0 and val_data is not None:
-                
-            elif verbose and log_interval and epoch % log_interval == 0:
-                logging.info(f"Epoch {epoch}/{max_epochs} completed.")
-            '''
         return self
 
 # --------------------------
@@ -473,8 +464,6 @@ class CPNNBase(ABC):
         use_ae_conv,
         distance_metric,
         neighborhood_function,
-        kohonen_lr_scheduler,
-        grossberg_lr_scheduler,
         ae_lr_scheduler,
         hidden_layers
     ):
@@ -500,8 +489,6 @@ class CPNNBase(ABC):
         self.use_ae_conv = use_ae_conv
         self.distance_metric = distance_metric
         self.neighborhood_function = neighborhood_function
-        self.kohonen_lr_scheduler = kohonen_lr_scheduler
-        self.grossberg_lr_scheduler = grossberg_lr_scheduler
         self.ae_lr_scheduler = ae_lr_scheduler
         self.hidden_layers = hidden_layers
 
@@ -551,11 +538,6 @@ class CPNNBase(ABC):
         """
         pass
 
-    def score(self, X, y):
-        from sklearn.metrics import accuracy_score
-        preds = self.predict(X)
-        return accuracy_score(y, preds)
-
 # --------------------------
 # CPNNClassifier Subclass
 # --------------------------
@@ -588,8 +570,6 @@ class CPNNClassifier(CPNNBase):
         use_ae_conv=False,
         distance_metric='euclidean',
         neighborhood_function='gaussian',
-        kohonen_lr_scheduler=None,
-        grossberg_lr_scheduler=None,
         ae_lr_scheduler=None,
         hidden_layers=1,
     ):
@@ -619,18 +599,18 @@ class CPNNClassifier(CPNNBase):
             use_ae_conv=use_ae_conv,
             distance_metric=distance_metric,
             neighborhood_function=neighborhood_function,
-            kohonen_lr_scheduler=kohonen_lr_scheduler,
-            grossberg_lr_scheduler=grossberg_lr_scheduler,
             ae_lr_scheduler=ae_lr_scheduler,
             hidden_layers=hidden_layers,
         )
 
-    def fit(self, X, y):
+    def fit(self, X, y, X_val = None, y_val = None):
         if self.random_state is not None:
             torch.manual_seed(self.random_state)
             np.random.seed(self.random_state)
 
         X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
+        if X_val is not None:
+            X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(self.device)
         if len(y.shape) == 1 or y.shape[1] == 1:
             y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
             self.classes_ = np.unique(y)
@@ -679,9 +659,15 @@ class CPNNClassifier(CPNNBase):
             with torch.no_grad():
                 _, X_encoded = self.autoencoder_(X_tensor)
             X_train = X_encoded
+            if X_val is not None:
+                with torch.no_grad():
+                    _, X_val_encoded = self.autoencoder_(X_val_tensor)
+                X_val_train = X_val_encoded
             input_size = self.ae_dim
         else:
             X_train = X_tensor
+            if X_val is not None:
+                X_val_train = X_val_tensor
             input_size = self.input_size_
 
         train_dataset = TensorDataset(X_train, y_tensor)
@@ -713,12 +699,23 @@ class CPNNClassifier(CPNNBase):
             "kohonen_optimizer_type": "sgd",
             "grossberg_optimizer_type": "sgd"
         }
-        if self.kohonen_lr_scheduler is not None:
-            config["kohonen_lr_scheduler"] = self.kohonen_lr_scheduler
-        if self.grossberg_lr_scheduler is not None:
-            config["grossberg_lr_scheduler"] = self.grossberg_lr_scheduler
 
-        self.cpnn_.fit(loader, val_data=(X_train, y_tensor), config=config)
+        if (X_val is not None and y_val is not None):
+            if len(y_val.shape) == 1 or y_val.shape[1] == 1:
+                y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(self.device)
+                self.classes_ = np.unique(y_val)
+                y_val_tensor = torch.nn.functional.one_hot(y_val_tensor, num_classes=len(self.classes_)).float()
+            else:
+                y_val_tensor = torch.tensor(y_val, dtype=torch.float32).to(self.device)
+                self.classes_ = np.arange(y_val_tensor.shape[1])
+
+
+            val_dataset = TensorDataset(X_val_train, y_val_tensor)
+            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+
+            self.cpnn_.fit(loader, val_data=val_loader, config=config)
+        else:
+            self.cpnn_.fit(loader, val_data=loader, config=config)
         return self
 
     def predict(self, X):

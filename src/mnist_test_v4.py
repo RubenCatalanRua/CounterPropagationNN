@@ -12,9 +12,16 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import optuna
 import time
+import logging
+from abc import ABC, abstractmethod
+import torch.nn.functional as F
 
-# Assuming CPNN_v3.py is in the same directory
+# Assuming CPNN_v3.py is in the same directory (renamed to CPNN.py for simplicity in import)
 from CPNN import CPNNClassifier  # Import the updated wrapper class
+from CPNN import CounterPropagationNetwork # Import the network class
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def preprocess_data(X, y, subset_size=2000, random_state=42):
     """
@@ -39,9 +46,9 @@ def preprocess_data(X, y, subset_size=2000, random_state=42):
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 # --- Load and Preprocess MNIST ---
-print("Loading Digits dataset...")
-digits = load_digits()
-X, y = digits.data, digits.target
+print("Loading...")
+mnist = fetch_openml('mnist_784', version=1, as_frame=False)
+X, y = mnist.data, mnist.target.astype(int)
 
 # Adjust the subset size if desired
 X_train, X_val, X_test, y_train, y_val, y_test = preprocess_data(X, y, subset_size=1000)
@@ -83,7 +90,7 @@ if use_hardware_epochs:
     X_speed = X_train[:speed_test_size]
     y_speed = y_train[:speed_test_size]
     start_time = time.time()
-    dummy_clf.fit(X_speed, y_speed)
+    dummy_clf.fit(X_speed, y_speed, val_data=(X_val, y_val))
     epoch_time = time.time() - start_time
     computed_hardware_max_epochs = int((hardware_time_limit / epoch_time) / 2)
     print(f"Hardware speed test: epoch time = {epoch_time:.4f}s, computed max_epochs = {computed_hardware_max_epochs}")
@@ -139,7 +146,7 @@ def objective(trial):
         scheduler_params['patience'] = trial.suggest_int('plateau_patience', 2, 10)
         scheduler_params['min_lr'] = trial.suggest_float('min_lr', 1e-6, 1e-4, log=True)
     if use_autoencoder:
-        ae_dim = trial.suggest_int("ae_dim", 1, input_size - 1)
+        ae_dim = trial.suggest_int("ae_dim", 1, input_size)
         ae_epochs = trial.suggest_int("ae_epochs", 50, 100)
         ae_lr = trial.suggest_float("ae_lr", 0.01, 0.1, log=True)
     else:
@@ -174,7 +181,7 @@ def objective(trial):
         hidden_layers=hidden_layers
     )
 
-    cpnn_clf.fit(X_train, y_train)
+    cpnn_clf.fit(X_train, y_train, X_val, y_val)
     preds = cpnn_clf.predict(X_val)
     val_acc = accuracy_score(y_val, preds)
     print(f"Trial completed with Validation Accuracy: {val_acc * 100:.2f}%")
@@ -182,8 +189,8 @@ def objective(trial):
 
 # --- Optimize Hyperparameters with Optuna ---
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
-study.optimize(objective, n_trials=30)
+study = optuna.create_study(direction="maximize")
+study.optimize(objective, n_trials=5)
 
 print("\nBest trial:")
 trial = study.best_trial

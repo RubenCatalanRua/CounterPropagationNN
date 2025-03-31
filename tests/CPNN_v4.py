@@ -675,6 +675,7 @@ class CPNNClassifier(CPNNBase):
                                             activation=self.ae_activation,
                                             conv=self.use_ae_conv).to(self.device)
             self.autoencoder_ = train_autoencoder(
+                self.autoencoder_,
                 X_tensor,
                 epochs=self.ae_epochs,
                 lr=self.ae_lr,
