@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from sklearn.datasets import fetch_openml
+from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix
@@ -9,24 +10,36 @@ import seaborn as sns
 import optuna
 import time
 
-from CPNN_v2 import CPNNClassifier  # Import the updated wrapper class
+from CPNN_v4 import CPNNClassifier  # Import the updated wrapper class
 
-print("Loading MNIST...")
-mnist = fetch_openml('mnist_784', version=1, as_frame=False)
-X, y = mnist.data, mnist.target.astype(int)
+def preprocess_data(X, y, subset_size=500, random_state=42):
+    """
+    Preprocesses the MNIST data:
+      - Uses only a subset for speed.
+      - Scales features using StandardScaler.
+      - Splits the data into train, validation, and test sets.
+    """
+    # Use a subset of the data
+    X = X[:subset_size]
+    y = y[:subset_size]
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Split data: first into training and temporary set,
+    # then split the temporary set equally into validation and test sets.
+    X_temp, X_test, y_temp, y_test = train_test_split(X_scaled, y, test_size=0.33, random_state=random_state, stratify=y)
+    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.33, random_state=random_state, stratify=y_temp)
+    
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
-# Use a subset for speed
-subset_size = 1500
-X = X[:subset_size]
-y = y[:subset_size]
+# --- Load and Preprocess MNIST ---
+print("Loading...")
+digits = load_digits()
+X, y = digits.data, digits.target
 
-# Scale features
-scaler = StandardScaler()
-X = scaler.fit_transform(X)
-
-# Split data into train, validation, and test sets
-X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+X_train, X_val, X_test, y_train, y_val, y_test = preprocess_data(X, y, subset_size=2000)
 
 # --- External Device Selection ---
 if torch.cuda.is_available():
@@ -43,13 +56,12 @@ print(f"Using device: {device}")
 use_hardware_epochs = False
 hardware_time_limit = 10.0  # seconds
 
-print('SHAPE: ', X_train.shape[1])
-
+print('Input feature size:', X_train.shape[1])
 input_size = X_train.shape[1]  # For MNIST, 784
 
 if use_hardware_epochs:
     dummy_clf = CPNNClassifier(
-        input_size=X_train.shape[1],  # Pass the actual input size
+        input_size=input_size,
         hidden_size=50,
         init_method="xavier_uniform",
         kohonen_lr=0.1,
@@ -75,28 +87,27 @@ else:
 
 # --- Define the Objective Function for Optuna ---
 def objective(trial):
-    # Hyperparameter sampling
-    hidden_size = trial.suggest_categorical("hidden_size", [50, 100, 250, 500, 1000])
-    init_method = trial.suggest_categorical("init_method", ["xavier_uniform", "kaiming_uniform"])
-    kohonen_lr = trial.suggest_float("kohonen_lr", 0.01, 0.5, log=True)
-    grossberg_lr = trial.suggest_float("grossberg_lr", 0.01, 0.5, log=True)
-    sampled_max_epochs = trial.suggest_int("max_epochs", 100, 300)
+    # Sample standard hyperparameters
+    hidden_size = trial.suggest_int("hidden_size", 50, 1000)
+    init_method = trial.suggest_categorical("init_method", ["xavier_uniform", "kaiming_uniform", "xavier_normal", "kaiming_normal"])
+    kohonen_lr = trial.suggest_float("kohonen_lr", 0.001, 0.5, log=True)
+    grossberg_lr = trial.suggest_float("grossberg_lr", 0.001, 0.5, log=True)
+    sampled_max_epochs = trial.suggest_int("max_epochs", 50, 300)
     if use_hardware_epochs and computed_hardware_max_epochs is not None:
         max_epochs = min(sampled_max_epochs, computed_hardware_max_epochs)
     else:
         max_epochs = sampled_max_epochs
-    neighborhood_size = trial.suggest_int("neighborhood_size", 3, 4)
-    batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
+    neighborhood_size = trial.suggest_int("neighborhood_size", 3, 5)
+    batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     use_autoencoder = trial.suggest_categorical("use_autoencoder", [False, True])
     early_stopping = trial.suggest_categorical("early_stopping", [True, False])
-    patience = trial.suggest_int("patience", 5, 20) if early_stopping else 10
-    ae_hidden_layers = trial.suggest_int("ae_hidden_layers", 0, 2)
+    patience = trial.suggest_int("patience", 5, 40) if early_stopping else 10
+    ae_hidden_layers = trial.suggest_int("ae_hidden_layers", 0, 0)
     ae_activation = trial.suggest_categorical("ae_activation", ['relu', 'tanh', 'sigmoid'])
     use_ae_conv = trial.suggest_categorical("use_ae_conv", [False, True])
     distance_metric = trial.suggest_categorical("distance_metric", ['euclidean', 'manhattan', 'cosine'])
     neighborhood_function = trial.suggest_categorical("neighborhood_function", ['gaussian', 'rectangular', 'triangular'])
-
-
+    
     if use_autoencoder:
         ae_dim = trial.suggest_int("ae_dim", 1, input_size - 1)
         ae_epochs = trial.suggest_int("ae_epochs", 50, 100)
@@ -106,8 +117,47 @@ def objective(trial):
         ae_epochs = None
         ae_lr = None
 
+    # --- Optimizer hyperparameters ---
+    kohonen_optimizer_type = trial.suggest_categorical("kohonen_optimizer_type", ["sgd", "adam"])
+    grossberg_optimizer_type = trial.suggest_categorical("grossberg_optimizer_type", ["sgd", "adam"])
+
+    grossberg_hidden_layers = trial.suggest_int("grossberg_hidden_layers", 0, 16)
+    grossberg_hidden_size = trial.suggest_int("grossberg_hidden_size", 16, 64)
+
+    # --- Scheduler hyperparameters for Kohonen layer ---
+    kohonen_scheduler_choice = trial.suggest_categorical("kohonen_scheduler", ["none", "step", "exponential"])
+    if kohonen_scheduler_choice == "none":
+        kohonen_lr_scheduler = None
+    elif kohonen_scheduler_choice == "step":
+        step_size = trial.suggest_int("kohonen_step_size", 50, 150)
+        gamma = trial.suggest_float("kohonen_gamma", 0.1, 0.9)
+        def scheduler_fn(optimizer):
+            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        kohonen_lr_scheduler = scheduler_fn
+    elif kohonen_scheduler_choice == "exponential":
+        gamma = trial.suggest_float("kohonen_exp_gamma", 0.9, 0.99)
+        def scheduler_fn(optimizer):
+            return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+        kohonen_lr_scheduler = scheduler_fn
+
+    # --- Scheduler hyperparameters for Grossberg layer ---
+    grossberg_scheduler_choice = trial.suggest_categorical("grossberg_scheduler", ["none", "step", "exponential"])
+    if grossberg_scheduler_choice == "none":
+        grossberg_lr_scheduler = None
+    elif grossberg_scheduler_choice == "step":
+        step_size = trial.suggest_int("grossberg_step_size", 50, 150)
+        gamma = trial.suggest_float("grossberg_gamma", 0.1, 0.9)
+        def scheduler_fn(optimizer):
+            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        grossberg_lr_scheduler = scheduler_fn
+    elif grossberg_scheduler_choice == "exponential":
+        gamma = trial.suggest_float("grossberg_exp_gamma", 0.9, 0.99)
+        def scheduler_fn(optimizer):
+            return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+        grossberg_lr_scheduler = scheduler_fn
+
     cpnn_clf = CPNNClassifier(
-        input_size=X_train.shape[1],  # Pass the actual input size
+        input_size=input_size,
         hidden_size=hidden_size,
         init_method=init_method,
         kohonen_lr=kohonen_lr,
@@ -129,7 +179,11 @@ def objective(trial):
         ae_activation=ae_activation,
         use_ae_conv=use_ae_conv,
         distance_metric=distance_metric,
-        neighborhood_function=neighborhood_function
+        neighborhood_function=neighborhood_function,
+        kohonen_lr_scheduler=kohonen_lr_scheduler,
+        grossberg_lr_scheduler=grossberg_lr_scheduler,
+        grossberg_hidden_layers=grossberg_hidden_layers,
+        grossberg_hidden_size=grossberg_hidden_size
     )
 
     cpnn_clf.fit(X_train, y_train)
@@ -139,8 +193,9 @@ def objective(trial):
     return val_acc
 
 # --- Optimize Hyperparameters with Optuna ---
-study = optuna.create_study(direction="maximize")
-study.optimize(objective, n_trials=10)
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
+study.optimize(objective, n_trials=100)
 
 print("\nBest trial:")
 trial = study.best_trial
@@ -158,7 +213,7 @@ else:
     final_max_epochs = sampled_max_epochs
 
 final_clf = CPNNClassifier(
-    input_size=X_train.shape[1],
+    input_size=input_size,
     hidden_size=best_params["hidden_size"],
     init_method=best_params["init_method"],
     kohonen_lr=best_params["kohonen_lr"],
@@ -180,7 +235,21 @@ final_clf = CPNNClassifier(
     ae_activation=best_params.get("ae_activation", 'relu'),
     use_ae_conv=best_params.get("use_ae_conv", False),
     distance_metric=best_params.get("distance_metric", 'euclidean'),
-    neighborhood_function=best_params.get("neighborhood_function", 'gaussian')
+    neighborhood_function=best_params.get("neighborhood_function", 'gaussian'),
+    grossberg_hidden_layers=best_params.get("grossberg_hidden_layers", 0),
+    grossberg_hidden_size=best_params.get("grossberg_hidden_size", 0),
+    kohonen_lr_scheduler=(
+        None if best_params["kohonen_scheduler"] == "none"
+        else (lambda opt: torch.optim.lr_scheduler.StepLR(opt, step_size=best_params["kohonen_step_size"], gamma=best_params["kohonen_gamma"])
+              if best_params["kohonen_scheduler"] == "step"
+              else torch.optim.lr_scheduler.ExponentialLR(opt, gamma=best_params["kohonen_exp_gamma"]))
+    ),
+    grossberg_lr_scheduler=(
+        None if best_params["grossberg_scheduler"] == "none"
+        else (lambda opt: torch.optim.lr_scheduler.StepLR(opt, step_size=best_params["grossberg_step_size"], gamma=best_params["grossberg_gamma"])
+              if best_params["grossberg_scheduler"] == "step"
+              else torch.optim.lr_scheduler.ExponentialLR(opt, gamma=best_params["grossberg_exp_gamma"]))
+    )
 )
 
 X_train_val = np.concatenate([X_train, X_val], axis=0)

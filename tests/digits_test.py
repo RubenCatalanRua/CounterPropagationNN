@@ -9,13 +9,12 @@ import seaborn as sns
 import optuna
 import time
 
-from CPNN_v3 import CPNNClassifier  # Import the updated wrapper class
+from CPNN_v3 import CPNNClassifier
 
 print("Loading Digits dataset...")
 digits = load_digits()
 X, y = digits.data, digits.target
 
-# For speed, use a subset (if desired) or comment this out to use full data.
 subset_size = 2000
 if X.shape[0] > subset_size:
     X = X[:subset_size]
@@ -135,7 +134,7 @@ def objective(trial):
     return val_acc
 
 # --- Optimize Hyperparameters with Optuna ---
-study = optuna.create_study(direction="maximize")
+study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
 study.optimize(objective, n_trials=10)
 
 print("\nBest trial:")
