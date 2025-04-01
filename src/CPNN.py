@@ -346,7 +346,9 @@ class CounterPropagationNetwork(nn.Module):
                 "neighborhood_function": 'gaussian',
                 "kohonen_optimizer_type": "sgd",
                 "grossberg_optimizer_type": "sgd",
+                "patience": 10
             }
+        patience = config.get("patience", 10)
         verbose = config.get("verbose", False)
         max_epochs = config.get("max_epochs", 300)
         initial_neighborhood = config.get("neighborhood_size", 3)
@@ -381,6 +383,10 @@ class CounterPropagationNetwork(nn.Module):
             else:
                 grossberg_optimizer = torch.optim.SGD(self.grossberg_net.parameters(), lr=grossberg_lr)
 
+        koh_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(kohonen_optimizer, patience=patience // 2,
+                                                               factor=0.5, verbose=verbose)
+        gross_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(grossberg_optimizer, patience=patience // 2,
+                                                               factor=0.5, verbose=verbose)
 
         for epoch in range(1, max_epochs + 1):
             decayed_neighborhood = max(1, initial_neighborhood - (initial_neighborhood - 1) * (epoch - 1) / (max_epochs - 1))
@@ -407,6 +413,8 @@ class CounterPropagationNetwork(nn.Module):
                     total_correct += (pred_labels == true_labels).sum().item()
                     total_samples += batch_x.size(0)
             avg_loss = total_loss / total_samples
+            koh_scheduler.step(avg_loss)
+            gross_scheduler.step(avg_loss)
             acc = (total_correct / total_samples) * 100
             logging.info(f"Epoch {epoch}/{max_epochs} | Validation Accuracy: {acc:.2f}% | Validation Loss: {avg_loss:.6f}")
 
@@ -464,7 +472,6 @@ class CPNNBase(ABC):
         use_ae_conv,
         distance_metric,
         neighborhood_function,
-        ae_lr_scheduler,
         hidden_layers
     ):
         self.input_size = input_size
@@ -489,7 +496,6 @@ class CPNNBase(ABC):
         self.use_ae_conv = use_ae_conv
         self.distance_metric = distance_metric
         self.neighborhood_function = neighborhood_function
-        self.ae_lr_scheduler = ae_lr_scheduler
         self.hidden_layers = hidden_layers
 
         self.early_stopping_no_improve_patience = (early_stopping_no_improve_patience
@@ -570,7 +576,6 @@ class CPNNClassifier(CPNNBase):
         use_ae_conv=False,
         distance_metric='euclidean',
         neighborhood_function='gaussian',
-        ae_lr_scheduler=None,
         hidden_layers=1,
     ):
         super().__init__(
@@ -599,7 +604,6 @@ class CPNNClassifier(CPNNBase):
             use_ae_conv=use_ae_conv,
             distance_metric=distance_metric,
             neighborhood_function=neighborhood_function,
-            ae_lr_scheduler=ae_lr_scheduler,
             hidden_layers=hidden_layers,
         )
 

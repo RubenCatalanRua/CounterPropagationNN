@@ -40,8 +40,8 @@ def preprocess_data(X, y, subset_size=2000, random_state=42):
 
     # Split data: first into training and temporary set,
     # then split the temporary set equally into validation and test sets.
-    X_temp, X_test, y_temp, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=random_state, stratify=y)
-    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.2, random_state=random_state, stratify=y_temp)
+    X_temp, X_test, y_temp, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=random_state, stratify=y)
+    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.3, random_state=random_state, stratify=y_temp)
 
     return X_train, X_val, X_test, y_train, y_val, y_test
 
@@ -51,7 +51,7 @@ mnist = fetch_openml('mnist_784', version=1, as_frame=False)
 X, y = mnist.data, mnist.target.astype(int)
 
 # Adjust the subset size if desired
-X_train, X_val, X_test, y_train, y_val, y_test = preprocess_data(X, y, subset_size=1000)
+X_train, X_val, X_test, y_train, y_val, y_test = preprocess_data(X, y, subset_size=1500)
 
 # --- External Device Selection ---
 if torch.cuda.is_available():
@@ -109,7 +109,7 @@ def objective(trial):
         max_epochs = min(sampled_max_epochs, computed_hardware_max_epochs)
     else:
         max_epochs = sampled_max_epochs
-    neighborhood_size = trial.suggest_int("neighborhood_size", 3, 5)
+    neighborhood_size = trial.suggest_int("neighborhood_size", 2, 5)
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     use_autoencoder = trial.suggest_categorical("use_autoencoder", [True, False])
     early_stopping = trial.suggest_categorical("early_stopping", [True, False])
@@ -120,7 +120,6 @@ def objective(trial):
     distance_metric = trial.suggest_categorical("distance_metric", ['euclidean', 'manhattan', 'cosine'])
     neighborhood_function = trial.suggest_categorical("neighborhood_function", ['gaussian', 'rectangular', 'triangular'])
     optimizer_type = trial.suggest_categorical("optimizer", ['SGD', 'Adam', 'AdamW'])
-    scheduler_type = trial.suggest_categorical("scheduler", [None, 'StepLR', 'CosineAnnealingLR', 'ReduceLROnPlateau'])
     hidden_layers = trial.suggest_int("hidden_layers", 1, 6)
 
     # Optimizer specific parameters
@@ -133,18 +132,6 @@ def objective(trial):
         kohonen_optimizer_params['weight_decay'] = trial.suggest_float("kohonen_weight_decay", 1e-5, 1e-2, log=True)
         grossberg_optimizer_params['weight_decay'] = trial.suggest_float("grossberg_weight_decay", 1e-5, 1e-2, log=True)
 
-    # Scheduler specific parameters
-    scheduler_params = {}
-    if scheduler_type == 'StepLR':
-        scheduler_params['step_size'] = trial.suggest_int('step_size', 5, 50)
-        scheduler_params['gamma'] = trial.suggest_float('gamma', 0.1, 0.9)
-    elif scheduler_type == 'CosineAnnealingLR':
-        scheduler_params['T_max'] = trial.suggest_int('t_max', 50, max_epochs)
-        scheduler_params['eta_min'] = trial.suggest_float('eta_min', 0, 0.1)
-    elif scheduler_type == 'ReduceLROnPlateau':
-        scheduler_params['factor'] = trial.suggest_float('factor', 0.1, 0.5)
-        scheduler_params['patience'] = trial.suggest_int('plateau_patience', 2, 10)
-        scheduler_params['min_lr'] = trial.suggest_float('min_lr', 1e-6, 1e-4, log=True)
     if use_autoencoder:
         ae_dim = trial.suggest_int("ae_dim", 1, input_size)
         ae_epochs = trial.suggest_int("ae_epochs", 50, 100)
@@ -190,7 +177,7 @@ def objective(trial):
 # --- Optimize Hyperparameters with Optuna ---
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 study = optuna.create_study(direction="maximize")
-study.optimize(objective, n_trials=5)
+study.optimize(objective, n_trials=15)
 
 print("\nBest trial:")
 trial = study.best_trial
