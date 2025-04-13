@@ -14,7 +14,7 @@ full_train_dataset = datasets.MNIST(root="./data", train=True, download=True, tr
 
 
 # Split into 15,000 training and 5,000 validation
-train_size = int(0.4 * len(full_train_dataset))
+train_size = int(0.8 * len(full_train_dataset))
 val_size = len(full_train_dataset) - train_size
 train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size])
 
@@ -38,20 +38,17 @@ sample_image, _ = full_train_dataset[0]  # Get first image
 input_size = sample_image.numel()
 output_size = len(full_train_dataset.classes)    # number of classes for MNIST
 
-print("Input size:", input_size)
-print("Output size:", output_size)
-
 # Train the model
 
 def objective(trial):
     # Hyperparameters to tune
-    kohonen_lr = trial.suggest_float("kohonen_lr", 0.1, 0.6, log=True)
-    grossberg_lr = trial.suggest_float("grossberg_lr", 0.1, 0.4, log=True)
-    neighborhood_size = trial.suggest_int("neighborhood_size", 12, 16)
-    neighborhood_function = trial.suggest_categorical("neighborhood_function", ['gaussian', 'triangular', 'rectangular'])
-    hidden_size = trial.suggest_int("hidden_size", 200, 2000, step=50)
-    epochs = trial.suggest_int("epochs", 50, 50, step=5)  # Adjust if needed
-    early_stopping = trial.suggest_categorical("early_stopping", [True, False])
+    kohonen_lr = trial.suggest_float("kohonen_lr", 0.4, 0.8, log=True)
+    grossberg_lr = trial.suggest_float("grossberg_lr", 0.1, 0.5, log=True)
+    neighborhood_size = trial.suggest_int("neighborhood_size", 16, 16)
+    neighborhood_function = trial.suggest_categorical("neighborhood_function", ['gaussian'])
+    hidden_size = trial.suggest_int("hidden_size", 3500, 4000, step=100)
+    epochs = trial.suggest_int("epochs", 75, 75, step=10)  # Adjust if needed
+    early_stopping = trial.suggest_categorical("early_stopping", [True])
     patience = trial.suggest_int("patience", 10, 10, step=5)
     # Fixed batch size through cache
 
@@ -60,8 +57,8 @@ def objective(trial):
     model = BaseCPNN(input_size, hidden_size, output_size).to(device)
 
     # Train the model using the current hyperparameters.
-    model.fit(train_loader=test_loader,
-    		  device=device,
+    model.fit(device,
+              train_loader=test_loader,
               val_loader=test_loader,
               epochs=epochs,
               kohonen_lr=kohonen_lr,

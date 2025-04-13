@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = True
+
 # ---------------------------
 # Base CounterPropagation Network
 # ---------------------------
@@ -28,7 +33,7 @@ class BaseCPNN(nn.Module):
         # Initialize weights (using Xavier initialization)
         self.kohonen_weights.data.normal_(0, 1)
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
-        nn.init.kaiming_uniform_(self.grossberg_weights, nonlinearity='relu')
+        nn.init.xavier_uniform_(self.grossberg_weights)
 
         # Fixed setting for distance and neighborhood function.
         self.distance_metric = 'euclidean'
@@ -98,7 +103,7 @@ class BaseCPNN(nn.Module):
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
 
 
-    def train_grossberg(self, x, y, optimizer, criterion, lr):
+    def train_grossberg(self, x, y, optimizer, lr):
         """
         Standard supervised training update for the grossberg mapping.
         We run a forward pass and backpropagate the loss.
@@ -116,8 +121,6 @@ class BaseCPNN(nn.Module):
         grad = self.grossberg_weights * counts.unsqueeze(0) - y_sum
         self.grossberg_weights.grad = grad * lr
         optimizer.step()
-        preds = torch.matmul(F.one_hot(winner_indices, num_classes=self.hidden_size).float(), self.grossberg_weights.t())
-        return criterion(preds, y)
 
     def fit(self, device, train_loader, val_loader=None, epochs=20, kohonen_lr=0.01, grossberg_lr=0.01, neighborhood_size=3, neighborhood_function="gaussian", early_stopping=False, patience = None):
         """
@@ -125,8 +128,11 @@ class BaseCPNN(nn.Module):
         Labels should be integer class labels.
         """
         # Optimizer for grossberg weights only.
-        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr)
-        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr)
+        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr, momentum=0.9, nesterov=True)
+        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, momentum=0.9, nesterov=True)
+
+        scheduler_gr = optim.lr_scheduler.ReduceLROnPlateau(optimizer_gr, mode='min', factor=0.5, patience=3, verbose=True)
+
         criterion = nn.CrossEntropyLoss()
         best_acc = -float('inf')
         best_val_loss = float('inf')
@@ -134,7 +140,15 @@ class BaseCPNN(nn.Module):
         init_patience = patience
         initial_neighborhood = neighborhood_size
 
+
+        scheduler_kh = optim.lr_scheduler.ExponentialLR(optimizer_kh, gamma=0.99)
+
         for epoch in range(1, epochs + 1):
+            # Print current learning rates
+            for param_group in optimizer_gr.param_groups:
+                print(f"[Epoch {epoch}] Grossberg LR: {param_group['lr']}")
+            for param_group in optimizer_kh.param_groups:
+                print(f"[Epoch {epoch}] Kohonen LR: {param_group['lr']}")
             self.train()
             running_loss = 0.0
             decayed_neighborhood = max(1, initial_neighborhood - (initial_neighborhood - 1) * (epoch - 1) / (epochs - 1))
@@ -143,21 +157,23 @@ class BaseCPNN(nn.Module):
                 # Update kohonen layer with an unsupervised rule.
                 self.update_kohonen(batch_x, optimizer_kh, lr=kohonen_lr, neighborhood_size=decayed_neighborhood, neighborhood_function=neighborhood_function)
                 # Update grossberg mapping with supervised learning.
-                loss = self.train_grossberg(batch_x, batch_y, optimizer_gr, criterion, grossberg_lr)
-                running_loss += loss.item()
+                self.train_grossberg(batch_x, batch_y, optimizer_gr, grossberg_lr)
 
-            avg_loss = running_loss / len(train_loader)
-            print(f"Epoch {epoch}/{epochs} - Loss: {avg_loss:.4f}")
-
+            print("Completed training epoch:", epoch)
             # Optionally evaluate on validation data.
             if val_loader is not None:
+                loss = self.evaluate(val_loader, return_loss=True)
+                print(f"Validation loss: {loss:.4f}")
+                scheduler_gr.step(loss)
+                scheduler_kh.step()
 
-                acc = self.evaluate(val_loader, return_loss=True)
-                print(f"Validation Accuracy: {acc}%")
+                if loss < best_val_loss:
+                    best_val_loss = loss
+                    patience = init_patience
 
             if early_stopping and val_loader is not None:
-                if avg_loss < best_val_loss:
-                    best_val_loss = avg_loss
+                if loss < best_val_loss:
+                    best_val_loss = loss
                     patience = init_patience
                 else:
                   patience -= 1
