@@ -24,5 +24,6 @@ logs/
 *.tmp
 
 
-# Ignore data folders in src
-/src/data/
+# Ignore certain folders
+src/data/
+ipynb_checkpoints/
