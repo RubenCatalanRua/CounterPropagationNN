@@ -22,3 +22,7 @@ __pycache__/
 logs/
 *.log
 *.tmp
+
+
+# Ignore data folders in src
+/src/data/
