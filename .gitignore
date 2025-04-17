@@ -25,5 +25,5 @@ logs/
 
 
 # Ignore certain folders
-data/
+/src/data/
 .ipynb_checkpoints/
