@@ -3,16 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = True
-
 # ---------------------------
 # Base CounterPropagation Network
 # ---------------------------
 class BaseCPNN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size, output_size, neighborhood_function='gaussian', neighborhood_size=3):
         """
         input_size: Dimensionality of the input (e.g. 28*28 for MNIST)
         hidden_size: Number of neurons in the Kohonen layer.
@@ -23,21 +18,21 @@ class BaseCPNN(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
-        # Kohonen (winner-take-all) layer: unsupervised weights.
+
         self.kohonen_weights = nn.Parameter(torch.empty(hidden_size, input_size))
-        # Grossberg mapping: a simple linear layer from hidden to output.
-        # Note: We use our custom training update for kohonen_weights,
-        # and we train grossberg_weights using standard gradient descent.
+
         self.grossberg_weights = nn.Parameter(torch.empty(output_size, hidden_size))
 
-        # Initialize weights (using Xavier initialization)
+        # Kohonen and Grossberg layers should be initialized randomly
         self.kohonen_weights.data.normal_(0, 1)
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
-        nn.init.xavier_uniform_(self.grossberg_weights)
 
-        # Fixed setting for distance and neighborhood function.
-        self.distance_metric = 'euclidean'
-        self.neighborhood_function = 'gaussian'
+        self.grossberg_weights.data.normal_(0, 1)
+        self.grossberg_weights.data = F.normalize(self.grossberg_weights.data, p=2, dim=1)
+
+
+        self.neighborhood_function = neighborhood_function
+        self.neighborhood_size = neighborhood_size
 
     def forward(self, x):
         x = self.flatten(x)
@@ -52,16 +47,11 @@ class BaseCPNN(nn.Module):
         winner_one_hot = torch.zeros(batch_size, self.kohonen_weights.size(0), device=x.device)
         winner_one_hot.scatter_(1, winners.unsqueeze(1), 1)
 
-        # Grossberg mapping: a simple linear mapping.
-        # Output = one_hot * grossberg_weights^T
         output = torch.matmul(winner_one_hot, self.grossberg_weights.t())
         return output, winners
 
-    def update_kohonen(self, x, optimizer, lr, neighborhood_size, neighborhood_function):
-        """
-        Update the Kohonen weights using a basic winner update.
-        For each sample in the batch, only the winning neuron is updated.
-        """
+    def update_kohonen(self, x, optimizer, lr, neighborhood_size):
+
         # Flatten the input: (batch_size, input_size)
         x = self.flatten(x)
         # Compute distances between each sample and each neuron's weight.
@@ -79,11 +69,11 @@ class BaseCPNN(nn.Module):
         diff_indices = torch.abs(hidden_indices - winner_indices_exp)  # (batch_size, hidden_size)
 
         # Compute the influence for all samples in a vectorized way
-        if neighborhood_function == 'gaussian':
+        if self.neighborhood_function == 'gaussian':
             influence = torch.exp(- (diff_indices ** 2) / (2 * (neighborhood_size ** 2)))
-        elif neighborhood_function == 'rectangular':
+        elif self.neighborhood_function == 'rectangular':
             influence = (diff_indices <= neighborhood_size).float()
-        elif neighborhood_function == 'triangular':
+        elif self.neighborhood_function == 'triangular':
             influence = torch.clamp(1 - diff_indices / neighborhood_size, min=0)
         else:
             influence = torch.exp(- (diff_indices ** 2) / (2 * (neighborhood_size ** 2)))
@@ -104,10 +94,7 @@ class BaseCPNN(nn.Module):
 
 
     def train_grossberg(self, x, y, optimizer, lr):
-        """
-        Standard supervised training update for the grossberg mapping.
-        We run a forward pass and backpropagate the loss.
-        """
+
         _, winner_indices = self.forward(x)
         batch_size = x.size(0)
 
@@ -122,77 +109,70 @@ class BaseCPNN(nn.Module):
         self.grossberg_weights.grad = grad * lr
         optimizer.step()
 
-    def fit(self, device, train_loader, val_loader=None, epochs=20, kohonen_lr=0.01, grossberg_lr=0.01, neighborhood_size=3, neighborhood_function="gaussian", early_stopping=False, patience = None):
-        """
-        Expects dataloaders that yield (inputs, labels).
-        Labels should be integer class labels.
-        """
-        # Optimizer for grossberg weights only.
-        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr, momentum=0.9, nesterov=True)
-        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, momentum=0.9, nesterov=True)
 
-        scheduler_gr = optim.lr_scheduler.ReduceLROnPlateau(optimizer_gr, mode='min', factor=0.5, patience=3, verbose=True)
+    def fit(self, device, train_loader, val_loader=None, epochs=20,
+            kohonen_lr=0.01, grossberg_lr=0.01,
+            early_stopping=False, patience=None):
+
+        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr, momentum=0.8, nesterov=True)
+        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, momentum=0.8, nesterov=True)
+
+        scheduler_gr = optim.lr_scheduler.ReduceLROnPlateau(optimizer_gr, mode='min', factor=0.5, patience=3)
+        scheduler_kh = optim.lr_scheduler.ExponentialLR(optimizer_kh, gamma=0.95)
 
         criterion = nn.CrossEntropyLoss()
-        best_acc = -float('inf')
         best_val_loss = float('inf')
-
         init_patience = patience
-        initial_neighborhood = neighborhood_size
-
-
-        scheduler_kh = optim.lr_scheduler.ExponentialLR(optimizer_kh, gamma=0.99)
 
         for epoch in range(1, epochs + 1):
-            # Print current learning rates
-            for param_group in optimizer_gr.param_groups:
-                print(f"[Epoch {epoch}] Grossberg LR: {param_group['lr']}")
-            for param_group in optimizer_kh.param_groups:
-                print(f"[Epoch {epoch}] Kohonen LR: {param_group['lr']}")
+            kohonen_time = 0
+            grossberg_time = 0
+
+            print(f"\n[Epoch {epoch}] Starting training...")
+
             self.train()
-            running_loss = 0.0
-            decayed_neighborhood = max(1, initial_neighborhood - (initial_neighborhood - 1) * (epoch - 1) / (epochs - 1))
+            decayed_neighborhood = max(1, self.neighborhood_size - (self.neighborhood_size - 1) * (epoch - 1) / (epochs - 1))
+
             for batch_x, batch_y in train_loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                # Update kohonen layer with an unsupervised rule.
-                self.update_kohonen(batch_x, optimizer_kh, lr=kohonen_lr, neighborhood_size=decayed_neighborhood, neighborhood_function=neighborhood_function)
-                # Update grossberg mapping with supervised learning.
+
+                # Profile Kohonen update
+                self.update_kohonen(batch_x, optimizer_kh, lr=kohonen_lr,
+                                    neighborhood_size=decayed_neighborhood)
+
+                # Profile Grossberg update
                 self.train_grossberg(batch_x, batch_y, optimizer_gr, grossberg_lr)
 
-            print("Completed training epoch:", epoch)
-            # Optionally evaluate on validation data.
             if val_loader is not None:
-                loss = self.evaluate(val_loader, return_loss=True)
-                print(f"Validation loss: {loss:.4f}")
-                scheduler_gr.step(loss)
+                val_loss = self.evaluate(val_loader, return_loss=True)
+                print(f"[Epoch {epoch}] Validation loss: {val_loss:.4f}")
+                scheduler_gr.step(val_loss)
                 scheduler_kh.step()
 
-                if loss < best_val_loss:
-                    best_val_loss = loss
-                    patience = init_patience
-
-            if early_stopping and val_loader is not None:
-                if loss < best_val_loss:
-                    best_val_loss = loss
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
                     patience = init_patience
                 else:
-                  patience -= 1
-                if patience == 0:
-                  print("Early stopping triggered.")
-                  break
+                    if early_stopping:
+                        patience -= 1
+                        if patience == 0:
+                            print("Early stopping triggered.")
+                            break
+
         return self
 
     def evaluate(self, data_loader, return_loss=False):
+
         self.eval()
+        device = next(self.parameters()).device
         correct = 0
         total = 0
         running_loss = 0.0
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(reduction='sum')
 
         with torch.no_grad():
             for batch_x, batch_y in data_loader:
-                batch_x = batch_x.view(batch_x.size(0), -1)
-                batch_x, batch_y = batch_x.to(next(self.parameters()).device), batch_y.to(next(self.parameters()).device)
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 outputs, _ = self.forward(batch_x)
                 preds = outputs.argmax(dim=1)
                 correct += (preds == batch_y).sum().item()
@@ -202,9 +182,10 @@ class BaseCPNN(nn.Module):
                     running_loss += criterion(outputs, batch_y).item()
 
         accuracy = 100 * correct / total
-        print(f"Accuracy: {accuracy}%")
+        print(f"Accuracy: {accuracy:.2f}%")
+
         if return_loss:
-            avg_loss = running_loss / len(data_loader)
+            avg_loss = running_loss / total
             return avg_loss
         else:
             return accuracy
