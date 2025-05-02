@@ -34,6 +34,8 @@ class BaseCPNN(nn.Module):
         self.neighborhood_function = neighborhood_function
         self.neighborhood_size = neighborhood_size
 
+        self.kohonen_snapshots = []
+
     def forward(self, x):
         x = self.flatten(x)
         # x is expected to be of shape (batch_size, input_size)
@@ -88,7 +90,7 @@ class BaseCPNN(nn.Module):
         grad_accum = grad.mean(dim=0)  # (hidden_size, input_size)
 
         optimizer.zero_grad()
-        self.kohonen_weights.grad = grad_accum * lr
+        self.kohonen_weights.grad = grad_accum
         optimizer.step()
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
 
@@ -106,7 +108,7 @@ class BaseCPNN(nn.Module):
         y_sum = torch.zeros(self.output_size, self.hidden_size, device=x.device)
         y_sum = y_sum.index_add(1, winner_indices, y_onehot.transpose(0, 1))
         grad = self.grossberg_weights * counts.unsqueeze(0) - y_sum
-        self.grossberg_weights.grad = grad * lr
+        self.grossberg_weights.grad = grad
         optimizer.step()
 
 
@@ -114,10 +116,10 @@ class BaseCPNN(nn.Module):
             kohonen_lr=0.01, grossberg_lr=0.01,
             early_stopping=False, patience=None):
 
-        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr, momentum=0.8, nesterov=True)
-        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, momentum=0.8, nesterov=True)
+        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr, weight_decay=1e-4, momentum=0.9, nesterov=True)
+        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4, momentum=0.9, nesterov=True)
 
-        scheduler_gr = optim.lr_scheduler.ReduceLROnPlateau(optimizer_gr, mode='min', factor=0.5, patience=3)
+        scheduler_gr = optim.lr_scheduler.ReduceLROnPlateau(optimizer_gr, mode='min', factor=0.2, patience=2)
         scheduler_kh = optim.lr_scheduler.ExponentialLR(optimizer_kh, gamma=0.95)
 
         criterion = nn.CrossEntropyLoss()
@@ -154,10 +156,16 @@ class BaseCPNN(nn.Module):
                     patience = init_patience
                 else:
                     if early_stopping:
-                        patience -= 1
-                        if patience == 0:
-                            print("Early stopping triggered.")
-                            break
+                      if math.isnan(val_loss):
+                        print("Early stopping triggered due to NaN loss.")
+                        break
+                      patience -= 1
+                      if patience == 0:
+                          print("Early stopping triggered.")
+                          break
+
+            with torch.no_grad():
+              self.kohonen_snapshots.append(self.kohonen_weights.cpu().clone())
 
         return self
 
