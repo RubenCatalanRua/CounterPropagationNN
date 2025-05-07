@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+import math
+
 # ---------------------------
 # Base CounterPropagation Network
 # ---------------------------
@@ -36,6 +40,9 @@ class BaseCPNN(nn.Module):
 
         self.kohonen_snapshots = []
 
+        self.val_criterion = nn.CrossEntropyLoss(reduction='mean')
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     def forward(self, x):
         x = self.flatten(x)
         # x is expected to be of shape (batch_size, input_size)
@@ -52,7 +59,7 @@ class BaseCPNN(nn.Module):
         output = torch.matmul(winner_one_hot, self.grossberg_weights.t())
         return output, winners
 
-    def update_kohonen(self, x, optimizer, lr, neighborhood_size):
+    def update_kohonen(self, x, optimizer, neighborhood_size):
 
         # Flatten the input: (batch_size, input_size)
         x = self.flatten(x)
@@ -95,7 +102,7 @@ class BaseCPNN(nn.Module):
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
 
 
-    def train_grossberg(self, x, y, optimizer, lr):
+    def train_grossberg(self, x, y, optimizer):
 
         _, winner_indices = self.forward(x)
         batch_size = x.size(0)
@@ -112,44 +119,58 @@ class BaseCPNN(nn.Module):
         optimizer.step()
 
 
-    def fit(self, device, train_loader, val_loader=None, epochs=20,
+    def fit(self, train_loader, val_loader=None, epochs=20,
             kohonen_lr=0.01, grossberg_lr=0.01,
             early_stopping=False, patience=None):
 
-        optimizer_gr = optim.SGD([self.grossberg_weights], lr=grossberg_lr, weight_decay=1e-4, momentum=0.9, nesterov=True)
-        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4, momentum=0.9, nesterov=True)
+        self.to(self.device)
 
-        scheduler_gr = optim.lr_scheduler.ReduceLROnPlateau(optimizer_gr, mode='min', factor=0.2, patience=2)
-        scheduler_kh = optim.lr_scheduler.ExponentialLR(optimizer_kh, gamma=0.95)
+        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4, momentum=0.95, nesterov=True)
+        optimizer_gr = optim.AdamW([self.grossberg_weights], lr=grossberg_lr)
 
-        criterion = nn.CrossEntropyLoss()
+
+        scheduler_kh = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_kh,
+            T_max=epochs,
+            eta_min=kohonen_lr * 0.1
+        )
+
+        scheduler_gr = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_gr,
+            T_max=epochs,
+            eta_min=grossberg_lr * 0.1
+        )
+
+        sigma_0 = min(self.neighborhood_size, self.hidden_size/2)
+        lambd = epochs / math.log(sigma_0)
+
         best_val_loss = float('inf')
         init_patience = patience
 
         for epoch in range(1, epochs + 1):
-            kohonen_time = 0
-            grossberg_time = 0
+
+            sigma_t = sigma_0 * math.exp(-epoch / lambd)
 
             print(f"\n[Epoch {epoch}] Starting training...")
 
             self.train()
-            decayed_neighborhood = max(1, self.neighborhood_size - (self.neighborhood_size - 1) * (epoch - 1) / (epochs - 1))
 
             for batch_x, batch_y in train_loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
 
                 # Profile Kohonen update
-                self.update_kohonen(batch_x, optimizer_kh, lr=kohonen_lr,
-                                    neighborhood_size=decayed_neighborhood)
+                self.update_kohonen(batch_x, optimizer_kh,
+                                    neighborhood_size=sigma_t)
 
                 # Profile Grossberg update
-                self.train_grossberg(batch_x, batch_y, optimizer_gr, grossberg_lr)
+                self.train_grossberg(batch_x, batch_y, optimizer_gr)
+
+            scheduler_kh.step()
+            scheduler_gr.step()
 
             if val_loader is not None:
                 val_loss = self.evaluate(val_loader, return_loss=True)
                 print(f"[Epoch {epoch}] Validation loss: {val_loss:.4f}")
-                scheduler_gr.step(val_loss)
-                scheduler_kh.step()
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -170,30 +191,31 @@ class BaseCPNN(nn.Module):
         return self
 
     def evaluate(self, data_loader, return_loss=False):
-
         self.eval()
-        device = next(self.parameters()).device
-        correct = 0
-        total = 0
-        running_loss = 0.0
-        criterion = nn.CrossEntropyLoss(reduction='sum')
+        val_loss = 0.0
+        correct  = 0
+        total    = 0
 
         with torch.no_grad():
-            for batch_x, batch_y in data_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                outputs, _ = self.forward(batch_x)
-                preds = outputs.argmax(dim=1)
-                correct += (preds == batch_y).sum().item()
-                total += batch_y.size(0)
+            for x, y in data_loader:
+                x = x.to(self.device)
+                y = y.to(self.device)
 
-                if return_loss:
-                    running_loss += criterion(outputs, batch_y).item()
+                logits, _ = self.forward(x)
+                loss = self.val_criterion(logits, y)
 
-        accuracy = 100 * correct / total
-        print(f"Accuracy: {accuracy:.2f}%")
+                # accumulate
+                batch_size = y.size(0)
+                val_loss += loss.item() * batch_size  # sum of per-sample loss
+                preds = logits.argmax(dim=1)
+                correct += (preds == y).sum().item()
+                total   += batch_size
+
+        avg_loss = val_loss / total
+        acc      = 100.0 * correct / total
+        print(f"Validation — Loss: {avg_loss:.4f}, Accuracy: {acc:.2f}%")
 
         if return_loss:
-            avg_loss = running_loss / total
             return avg_loss
         else:
-            return accuracy
+            return acc
