@@ -11,13 +11,19 @@ import math
 # Base CounterPropagation Network
 # ---------------------------
 class BaseCPNN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, neighborhood_function='gaussian', neighborhood_size=3):
+    def __init__(self, input_size, hidden_size, output_size, neighborhood_function='gaussian', neighborhood_size=3, device=None):
         """
         input_size: Dimensionality of the input (e.g. 28*28 for MNIST)
         hidden_size: Number of neurons in the Kohonen layer.
         output_size: Number of classes.
         """
         super(BaseCPNN, self).__init__()
+
+
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+
         self.flatten = nn.Flatten()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -41,7 +47,8 @@ class BaseCPNN(nn.Module):
         self.kohonen_snapshots = []
 
         self.val_criterion = nn.CrossEntropyLoss(reduction='mean')
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.to(self.device)
 
     def forward(self, x):
         x = self.flatten(x)
@@ -57,18 +64,12 @@ class BaseCPNN(nn.Module):
         winner_one_hot.scatter_(1, winners.unsqueeze(1), 1)
 
         output = torch.matmul(winner_one_hot, self.grossberg_weights.t())
-        return output, winners
+        return output, winners, batch_size
 
-    def update_kohonen(self, x, optimizer, neighborhood_size):
+    def update_kohonen(self, x, winner_indices, batch_size, optimizer, neighborhood_size):
 
-        # Flatten the input: (batch_size, input_size)
         x = self.flatten(x)
-        # Compute distances between each sample and each neuron's weight.
-        # x: (batch_size, input_size), weights: (hidden_size, input_size)
-        distances = torch.cdist(x, self.kohonen_weights, p=2)  # Shape: (batch_size, hidden_size
-        winner_indices = torch.argmin(distances, dim=1)  # Shape: (batch_size,)
 
-        batch_size = x.size(0)
         # Create a tensor for hidden indices, shape (batch_size, hidden_size)
         hidden_indices = torch.arange(self.hidden_size, device=x.device, dtype=torch.float32)
         hidden_indices = hidden_indices.unsqueeze(0).expand(batch_size, -1)
@@ -102,10 +103,7 @@ class BaseCPNN(nn.Module):
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
 
 
-    def train_grossberg(self, x, y, optimizer):
-
-        _, winner_indices = self.forward(x)
-        batch_size = x.size(0)
+    def train_grossberg(self, x, y, winner_indices, batch_size, optimizer):
 
         optimizer.zero_grad()
         counts = torch.zeros(self.hidden_size, device=x.device)
@@ -123,7 +121,6 @@ class BaseCPNN(nn.Module):
             kohonen_lr=0.01, grossberg_lr=0.01,
             early_stopping=False, patience=None):
 
-        self.to(self.device)
 
         optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4, momentum=0.95, nesterov=True)
         optimizer_gr = optim.AdamW([self.grossberg_weights], lr=grossberg_lr)
@@ -158,12 +155,14 @@ class BaseCPNN(nn.Module):
             for batch_x, batch_y in train_loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
 
+                _,winner_indices, batch_size = self.forward(batch_x)
+
                 # Profile Kohonen update
-                self.update_kohonen(batch_x, optimizer_kh,
+                self.update_kohonen(batch_x, winner_indices, batch_size, optimizer_kh,
                                     neighborhood_size=sigma_t)
 
                 # Profile Grossberg update
-                self.train_grossberg(batch_x, batch_y, optimizer_gr)
+                self.train_grossberg(batch_x, batch_y, winner_indices, batch_size, optimizer_gr)
 
             scheduler_kh.step()
             scheduler_gr.step()
@@ -201,7 +200,7 @@ class BaseCPNN(nn.Module):
                 x = x.to(self.device)
                 y = y.to(self.device)
 
-                logits, _ = self.forward(x)
+                logits, _, _ = self.forward(x)
                 loss = self.val_criterion(logits, y)
 
                 # accumulate
