@@ -1,15 +1,15 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-import math
-
 # ---------------------------
 # Base CounterPropagation Network
 # ---------------------------
+
+
 class BaseCPNN(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, neighborhood_function='gaussian', neighborhood_size=3, device=None):
         """
@@ -18,7 +18,6 @@ class BaseCPNN(nn.Module):
         output_size: Number of classes.
         """
         super(BaseCPNN, self).__init__()
-
 
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
@@ -29,17 +28,20 @@ class BaseCPNN(nn.Module):
         self.hidden_size = hidden_size
         self.output_size = output_size
 
-        self.kohonen_weights = nn.Parameter(torch.empty(hidden_size, input_size))
+        self.kohonen_weights = nn.Parameter(
+            torch.empty(self.hidden_size, self.input_size))
 
-        self.grossberg_weights = nn.Parameter(torch.empty(output_size, hidden_size))
+        self.grossberg_weights = nn.Parameter(
+            torch.empty(self.output_size, self.hidden_size))
 
         # Kohonen and Grossberg layers should be initialized randomly
         self.kohonen_weights.data.normal_(0, 1)
-        self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
+        self.kohonen_weights.data = F.normalize(
+            self.kohonen_weights.data, p=2, dim=1)
 
         self.grossberg_weights.data.normal_(0, 1)
-        self.grossberg_weights.data = F.normalize(self.grossberg_weights.data, p=2, dim=1)
-
+        self.grossberg_weights.data = F.normalize(
+            self.grossberg_weights.data, p=2, dim=1)
 
         self.neighborhood_function = neighborhood_function
         self.neighborhood_size = neighborhood_size
@@ -55,12 +57,14 @@ class BaseCPNN(nn.Module):
         # x is expected to be of shape (batch_size, input_size)
         # Compute distance between x and each kohonen weight vector.
         # (Using Euclidean distance here.)
-        distances = torch.cdist(x, self.kohonen_weights)  # shape: (batch, hidden_size)
+        # shape: (batch, hidden_size)
+        distances = torch.cdist(x, self.kohonen_weights)
         # Winner-take-all: find index of closest neuron for each sample.
         winners = torch.argmin(distances, dim=1)  # shape: (batch,)
         # Create one-hot encoding of the winning neurons.
         batch_size = x.size(0)
-        winner_one_hot = torch.zeros(batch_size, self.kohonen_weights.size(0), device=x.device)
+        winner_one_hot = torch.zeros(
+            batch_size, self.kohonen_weights.size(0), device=x.device)
         winner_one_hot.scatter_(1, winners.unsqueeze(1), 1)
 
         output = torch.matmul(winner_one_hot, self.grossberg_weights.t())
@@ -71,25 +75,28 @@ class BaseCPNN(nn.Module):
         x = self.flatten(x)
 
         # Create a tensor for hidden indices, shape (batch_size, hidden_size)
-        hidden_indices = torch.arange(self.hidden_size, device=x.device, dtype=torch.float32)
+        hidden_indices = torch.arange(
+            self.hidden_size, device=x.device, dtype=torch.float32)
         hidden_indices = hidden_indices.unsqueeze(0).expand(batch_size, -1)
 
         # Expand winner indices to match hidden_indices dimensions: (batch_size, 1)
         winner_indices_exp = winner_indices.unsqueeze(1).float()
-        diff_indices = torch.abs(hidden_indices - winner_indices_exp)  # (batch_size, hidden_size)
+        # (batch_size, hidden_size)
+        diff_indices = torch.abs(hidden_indices - winner_indices_exp)
 
-        # Compute the influence for all samples in a vectorized way
-        if self.neighborhood_function == 'gaussian':
-            influence = torch.exp(- (diff_indices ** 2) / (2 * (neighborhood_size ** 2)))
-        elif self.neighborhood_function == 'rectangular':
+        if self.neighborhood_function == 'rectangular':
             influence = (diff_indices <= neighborhood_size).float()
         elif self.neighborhood_function == 'triangular':
-            influence = torch.clamp(1 - diff_indices / neighborhood_size, min=0)
+            influence = torch.clamp(
+                1 - diff_indices / neighborhood_size, min=0)
         else:
-            influence = torch.exp(- (diff_indices ** 2) / (2 * (neighborhood_size ** 2)))
+            influence = torch.exp(- (diff_indices ** 2) /
+                                  (2 * (neighborhood_size ** 2)))
+
         x_expanded = x.unsqueeze(1)
         weights_expanded = self.kohonen_weights.unsqueeze(0)
-        diff = x_expanded - weights_expanded  # (batch_size, hidden_size, input_size)
+        # (batch_size, hidden_size, input_size)
+        diff = x_expanded - weights_expanded
 
         # Unsqueeze influence to match the diff dimensions: (batch_size, hidden_size, 1)
         influence = influence.unsqueeze(2)
@@ -100,31 +107,31 @@ class BaseCPNN(nn.Module):
         optimizer.zero_grad()
         self.kohonen_weights.grad = grad_accum
         optimizer.step()
-        self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, p=2, dim=1)
-
+        self.kohonen_weights.data = F.normalize(
+            self.kohonen_weights.data, p=2, dim=1)
 
     def train_grossberg(self, x, y, winner_indices, batch_size, optimizer):
 
         optimizer.zero_grad()
         counts = torch.zeros(self.hidden_size, device=x.device)
-        counts = counts.index_add(0, winner_indices, torch.ones(batch_size, device=x.device))
+        counts = counts.index_add(
+            0, winner_indices, torch.ones(batch_size, device=x.device))
         y_onehot = F.one_hot(y, num_classes=self.output_size).float()
 
-        y_sum = torch.zeros(self.output_size, self.hidden_size, device=x.device)
+        y_sum = torch.zeros(
+            self.output_size, self.hidden_size, device=x.device)
         y_sum = y_sum.index_add(1, winner_indices, y_onehot.transpose(0, 1))
         grad = self.grossberg_weights * counts.unsqueeze(0) - y_sum
         self.grossberg_weights.grad = grad
         optimizer.step()
 
-
     def fit(self, train_loader, val_loader=None, epochs=20,
             kohonen_lr=0.01, grossberg_lr=0.01,
             early_stopping=False, patience=None):
 
-
-        optimizer_kh = optim.SGD([self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4, momentum=0.95, nesterov=True)
+        optimizer_kh = optim.SGD(
+            [self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4, momentum=0.95, nesterov=True)
         optimizer_gr = optim.AdamW([self.grossberg_weights], lr=grossberg_lr)
-
 
         scheduler_kh = optim.lr_scheduler.CosineAnnealingLR(
             optimizer_kh,
@@ -153,16 +160,18 @@ class BaseCPNN(nn.Module):
             self.train()
 
             for batch_x, batch_y in train_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                batch_x, batch_y = batch_x.to(
+                    self.device), batch_y.to(self.device)
 
-                _,winner_indices, batch_size = self.forward(batch_x)
+                _, winner_indices, batch_size = self.forward(batch_x)
 
                 # Profile Kohonen update
                 self.update_kohonen(batch_x, winner_indices, batch_size, optimizer_kh,
                                     neighborhood_size=sigma_t)
 
                 # Profile Grossberg update
-                self.train_grossberg(batch_x, batch_y, winner_indices, batch_size, optimizer_gr)
+                self.train_grossberg(
+                    batch_x, batch_y, winner_indices, batch_size, optimizer_gr)
 
             scheduler_kh.step()
             scheduler_gr.step()
@@ -176,24 +185,25 @@ class BaseCPNN(nn.Module):
                     patience = init_patience
                 else:
                     if early_stopping:
-                      if math.isnan(val_loss):
-                        print("Early stopping triggered due to NaN loss.")
-                        break
-                      patience -= 1
-                      if patience == 0:
-                          print("Early stopping triggered.")
-                          break
+                        if math.isnan(val_loss):
+                            print("Early stopping triggered due to NaN loss.")
+                            break
+                        patience -= 1
+                        if patience == 0:
+                            print("Early stopping triggered.")
+                            break
 
             with torch.no_grad():
-              self.kohonen_snapshots.append(self.kohonen_weights.cpu().clone())
+                self.kohonen_snapshots.append(
+                    self.kohonen_weights.cpu().clone())
 
         return self
 
     def evaluate(self, data_loader, return_loss=False):
         self.eval()
         val_loss = 0.0
-        correct  = 0
-        total    = 0
+        correct = 0
+        total = 0
 
         with torch.no_grad():
             for x, y in data_loader:
@@ -208,10 +218,10 @@ class BaseCPNN(nn.Module):
                 val_loss += loss.item() * batch_size  # sum of per-sample loss
                 preds = logits.argmax(dim=1)
                 correct += (preds == y).sum().item()
-                total   += batch_size
+                total += batch_size
 
         avg_loss = val_loss / total
-        acc      = 100.0 * correct / total
+        acc = 100.0 * correct / total
         print(f"Validation — Loss: {avg_loss:.4f}, Accuracy: {acc:.2f}%")
 
         if return_loss:
