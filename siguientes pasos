@@ -1,0 +1,28 @@
+- Cerrar la forward-only
+- Implementación de full counterpropagation (básica)
+
+- Diseño experimental (y hacer los experimentos)
+    - (Que añadir a la full counterpropagation para mejorar)
+
+
+- Escribir memoria
+
+
+Qué evaluar en la red neuronal:
+- Rendimiento en test
+- Tiempo de computo en training + test (CPU) 
+
+
+
+- ESCRIBIR EL DISEÑO EXPERIMENTAL AL PROFE
+
+
+
+- ESCRIBIR EL INFORME DE SEGUIMIENTO ANTES DEL 22
+
+
+
+- PENSAR DATASETS
+
+
+- FLATTEN DE DATOS TABULARES
