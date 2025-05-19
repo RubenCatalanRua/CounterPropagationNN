@@ -35,7 +35,7 @@ class BaseCPNN(nn.Module):
     """
 
     def __init__(self, input_size, hidden_size, output_size,
-                 neighborhood_function='gaussian', 
+                 neighborhood_function='gaussian',
                  neighborhood_size=3, device=None):
         """
         Initializes the BaseCPNN model with specified layer sizes 
@@ -61,6 +61,10 @@ class BaseCPNN(nn.Module):
 
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
+
+        assert input_size > 0, "Input size must be > 0"
+        assert hidden_size > 0, "Hidden size must be > 0"
+        assert output_size > 0, "Output size must be > 0"
 
         self.flatten = nn.Flatten()
         self.input_size = input_size
@@ -117,8 +121,8 @@ class BaseCPNN(nn.Module):
         output = torch.matmul(winner_one_hot, self.grossberg_weights.t())
         return output, winners, batch_size
 
-    def update_kohonen(self, x, winner_indices, batch_size, 
-        optimizer, neighborhood_size):
+    def update_kohonen(self, x, winner_indices, batch_size,
+                       optimizer, neighborhood_size):
         """
         Updates Kohonen weights using the neighborhood function.
 
@@ -214,6 +218,10 @@ class BaseCPNN(nn.Module):
             patience (int, optional): Epochs to wait before stopping 
             after no improvement.
         """
+
+        if len(train_loader) == 0:
+            raise ValueError("Training loader is empty.")
+
         optimizer_kh = optim.SGD(
             [self.kohonen_weights], lr=kohonen_lr, weight_decay=1e-4,
             momentum=0.95, nesterov=True)
@@ -225,12 +233,24 @@ class BaseCPNN(nn.Module):
             optimizer_gr, T_max=epochs, eta_min=grossberg_lr * 0.1)
 
         sigma_0 = min(self.neighborhood_size, self.hidden_size / 2)
-        lambd = epochs / math.log(sigma_0)
+        if sigma_0 < 1:
+            sigma_0 = 1
+
+        decay_enabled = sigma_0 > 1
+
+        if decay_enabled:
+            lambd = epochs / math.log(sigma_0)
+
         best_val_loss = float('inf')
         init_patience = patience
 
         for epoch in range(1, epochs + 1):
-            sigma_t = max(1.0, sigma_0 * math.exp(-epoch / lambd))
+
+            if decay_enabled:
+                sigma_t = max(1.0, sigma_0 * math.exp(-epoch / lambd))
+            else:
+                sigma_t = sigma_0
+
             print(f"\n[Epoch {epoch}] Starting training...")
 
             self.train()
@@ -240,7 +260,7 @@ class BaseCPNN(nn.Module):
                 _, winner_indices, batch_size = self.forward(batch_x)
 
                 self.update_kohonen(
-                    batch_x, winner_indices, batch_size, optimizer_kh, 
+                    batch_x, winner_indices, batch_size, optimizer_kh,
                     neighborhood_size=sigma_t)
                 self.train_grossberg(
                     batch_x, batch_y, winner_indices, batch_size, optimizer_gr)
@@ -283,6 +303,9 @@ class BaseCPNN(nn.Module):
         Returns:
             float: Loss or accuracy, depending on return_loss.
         """
+
+        if len(data_loader) == 0:
+            raise ValueError("Evaluation loader is empty.")
 
         self.eval()
         val_loss = 0.0
