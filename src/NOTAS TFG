@@ -1,0 +1,19 @@
+- Nota informe -> AÑADIR LEYES Y REGULACIONES
+- Como experimentar -> COLAB
+- Training time, performance -> EN GPU
+- Datasets -> KANJI MNIST / 
+
+
+- Donde se enmarca el proyecto - CHECK (por corregir)
+
+- Apartado anterior a arquitectura -> In depth en redes neuronales -> BACKGROUND - CHECK (por corregir)
+
+- Arquitectura -> tres capas - CHECK (por corregir)
+- Counter propagation networks -> training - CHECK (por corregir)
+
+-SOLO LEYES Y REGULACIONES
+
+
+
+
+- pip install wandb
