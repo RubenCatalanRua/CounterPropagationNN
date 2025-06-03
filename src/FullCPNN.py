@@ -48,6 +48,7 @@ class FullCPNN(nn.Module):
                  output_size: int,
                  neighborhood_function: str = 'gaussian',
                  neighborhood_size: float = 3,
+                 hebbian = False,
                  device: torch.device = None):
         """
         Initializes the FullCPNN model with specified layer sizes 
@@ -114,6 +115,8 @@ class FullCPNN(nn.Module):
         # and reconstruction (reverse Grossberg)
         self.val_criterion = nn.CrossEntropyLoss(reduction='mean')
         self.recon_criterion = nn.MSELoss(reduction='mean')
+
+        self.use_hebbian = hebbian
 
         # Move parameters to the specified device
         self.to(self.device)
@@ -241,23 +244,59 @@ class FullCPNN(nn.Module):
             loss_rev (float): MSE loss component.
         """
         # Zero gradients for both forward and reverse optimizers
-        opt_fwd.zero_grad()
-        opt_rev.zero_grad()
 
-        x = self.flatten(x)
+        if self.use_hebbian:
 
-        # Classification loss (forward Grossberg)
-        loss_fwd = self.val_criterion(class_logits, labels)
-        # Reconstruction loss (reverse Grossberg)
-        loss_rev = self.recon_criterion(recos, x)
+            opt_fwd.zero_grad()
+            opt_rev.zero_grad()
 
-        # Combined loss
-        total_loss = loss_fwd + loss_rev
-        total_loss.backward()
+            x = self.flatten(x)
 
-        # Step both optimizers
-        opt_fwd.step()
-        opt_rev.step()
+            counts = torch.zeros(self.hidden_size, device=self.device)
+            counts = counts.index_add(
+                0, winners, torch.ones(x.size(0), device=self.device))
+            y_onehot = F.one_hot(labels, num_classes=self.output_size).float()
+
+            y_sum = torch.zeros(
+                self.output_size, self.hidden_size, device=self.device)
+
+            y_sum = y_sum.index_add(1, winners, y_onehot.transpose(0, 1))
+
+            x_sum = torch.zeros(
+                self.input_size, self.hidden_size, device=self.device)
+
+            x_sum = x_sum.index_add(1, winners, x.transpose(0, 1))
+
+            grad_fwd = self.G_fwd * counts.unsqueeze(0) - y_sum
+            self.G_fwd.grad = grad_fwd
+
+            grad_rev = self.G_rev * counts.unsqueeze(0) - x_sum
+            self.G_rev.grad = grad_rev
+
+            opt_fwd.step()
+            opt_rev.step()
+
+            return None, None, None
+
+        else:
+
+            opt_fwd.zero_grad()
+            opt_rev.zero_grad()
+
+            x = self.flatten(x)
+
+            # Classification loss (forward Grossberg)
+            loss_fwd = self.val_criterion(class_logits, labels)
+            # Reconstruction loss (reverse Grossberg)
+            loss_rev = self.recon_criterion(recos, x)
+
+            # Combined loss
+            total_loss = loss_fwd + loss_rev
+            total_loss.backward()
+
+            # Step both optimizers
+            opt_fwd.step()
+            opt_rev.step()
 
         return total_loss.item(), loss_fwd.item(), loss_rev.item()
 
@@ -347,8 +386,8 @@ class FullCPNN(nn.Module):
             scheduler_kh.step()
 
         # --- Phase 2: Train Grossberg (supervised) ---
-        opt_f = optim.Adam([self.G_fwd], lr=grossberg_lr)
-        opt_r = optim.Adam([self.G_rev], lr=grossberg_lr)
+        opt_f = optim.AdamW([self.G_fwd], lr=grossberg_lr)
+        opt_r = optim.AdamW([self.G_rev], lr=grossberg_lr)
         # Cosine annealing schedulers for Grossberg learning rates
         scheduler_fwd = optim.lr_scheduler.CosineAnnealingLR(
             opt_f, T_max=grossberg_epochs, eta_min=grossberg_lr * 0.1
@@ -373,10 +412,9 @@ class FullCPNN(nn.Module):
                 # Forward pass: get logits, reconstructions, and BMUs
                 cls_logits, recos, winners = self.forward(batch_x)
                 # Compute and apply gradients for Grossberg layers
-                loss, loss_fwd, loss_rev = self.update_grossberg(
+                _, _, _ = self.update_grossberg(
                     batch_x, cls_logits, recos, batch_y, winners, opt_f, opt_r
                 )
-                epoch_loss += loss
 
             # Step Grossberg schedulers
             scheduler_fwd.step()
@@ -384,7 +422,7 @@ class FullCPNN(nn.Module):
 
             # Validation (if provided)
             if val_loader is not None:
-                val_loss = self.evaluate(val_loader, return_loss=True)
+                val_loss = self.evaluate(val_loader, return_loss=True, combined=True)
 
                 # Early stopping logic
                 if val_loss < best_val_loss:
@@ -399,12 +437,10 @@ class FullCPNN(nn.Module):
                         if patience == 0:
                             print("Early stopping triggered.")
                             break
-            else:
-                print(f"[Epoch {epoch}] train_loss={epoch_loss:.4f}")
 
         return self
 
-    def evaluate(self, data_loader, return_loss = False):
+    def evaluate(self, data_loader, return_loss = False, combined = False):
         """
         Evaluates the FullCPNN on provided data (validation or test).
 
@@ -461,4 +497,10 @@ class FullCPNN(nn.Module):
         print(f"Eval — l1={avg_l1:.4f}, l2={avg_l2:.4f}")
         print(f"Combined_loss={avg_loss:.4f}, acc={acc:.2f}%")
 
-        return avg_loss if return_loss else acc
+        if return_loss:
+            if combined:
+                return avg_loss
+            else:
+                return avg_l1
+        else:
+            return acc

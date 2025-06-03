@@ -168,7 +168,7 @@ class ExtendedForwardCPNN(nn.Module):
         self.kohonen_weights.data = F.normalize(self.kohonen_weights.data,
                                                 p=2, dim=1)
 
-    def train_mlp(self, logits, y, optimizer):
+    def update_mlp(self, logits, y, optimizer):
         """
         Train the MLP using cross-entropy loss.
 
@@ -252,7 +252,7 @@ class ExtendedForwardCPNN(nn.Module):
                 batch_x, batch_y = batch_x.to(
                     self.device), batch_y.to(self.device)
                 output, winner_indices, batch_size = self.forward(batch_x)
-                self.train_mlp(output, batch_y, optimizer_mlp)
+                self.update_mlp(output, batch_y, optimizer_mlp)
                 self.update_kohonen(batch_x, winner_indices, batch_size,
                                     optimizer_kh, neighborhood_size=sigma_t)
 
