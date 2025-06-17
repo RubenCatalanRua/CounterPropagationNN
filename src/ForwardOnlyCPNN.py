@@ -197,7 +197,7 @@ class ForwardOnlyCPNN(nn.Module):
         y_onehot = F.one_hot(y, num_classes=self.output_size).float()
 
         y_sum = torch.zeros(
-            self.output_size, self.hidden_size, device=x.device)
+            self.output_size, self.hidden_size, device=y.device)
         y_sum = y_sum.index_add(1, winner_indices, y_onehot.transpose(0, 1))
         grad = self.grossberg_weights * counts.unsqueeze(0) - y_sum
         self.grossberg_weights.grad = grad
