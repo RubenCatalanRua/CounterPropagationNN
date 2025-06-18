@@ -1,40 +1,48 @@
-import math
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-
-
-class BasicMLP(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, div_layer_value, device):
+class BasicNN(nn.Module):
+    def __init__(self, input_size, hidden_size, hidden_layers, div_layer_value, output_size, dropout_rate, device):
         super(BasicNN, self).__init__()
+
+        assert hidden_layers > 0, "Number of hidden layers must be greater than 0"
+
         self.flatten = nn.Flatten()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.hidden_layers = hidden_layers
         self.output_size = output_size
         self.div_layer_value = div_layer_value
 
-        self.network = nn.Sequential(
-            nn.Linear(self.input_size, self.hidden_size),
-            nn.ReLU(),
-            nn.Linear(self.hidden_size, self.hidden_size // self.div_layer_value),
-            nn.ReLU(),
-            nn.Linear(self.hidden_size // self.div_layer_value, self.output_size)
-        )
+
+        layers = []
+        layers.append(nn.Linear(input_size, hidden_size))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(p=dropout_rate))
+
+        for i in range(self.hidden_layers - 1):
+            new_size = max(1, hidden_size // self.div_layer_value)
+            layers.append(nn.Linear(hidden_size,
+                                    new_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(p=dropout_rate))
+            hidden_size = new_size
+
+        layers.append(nn.Linear(hidden_size, self.output_size))
+        self.mlp = nn.Sequential(*layers)
+
 
         self.val_criterion = nn.CrossEntropyLoss(reduction='mean')
         self.device = device
 
     def forward(self, x):
         x = self.flatten(x)
-        logits = self.network(x)
+        logits = self.mlp(x)
         return logits
 
 
     def fit(self, train_loader, val_loader, epochs, lr, early_stopping=False, patience=5):
         optimizer = optim.AdamW(self.parameters(), lr=lr)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0.1 * lr)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=0.1 * lr)
+
+        best_val_loss = float('inf')
+        init_patience = patience
 
         self.train()
 
@@ -48,9 +56,24 @@ class BasicMLP(nn.Module):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                scheduler.step()
-                running_loss += loss.item()
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {running_loss/len(train_loader)}")
+            scheduler.step()
+
+            if val_loader is not None:
+              val_loss = self.evaluate(val_loader, return_loss=True)
+              print(f"[Epoch {epoch}] Validation loss: {val_loss:.4f}")
+
+              if val_loss < best_val_loss:
+                  best_val_loss = val_loss
+                  patience = init_patience
+              else:
+                  if early_stopping:
+                      if math.isnan(val_loss):
+                          print("Early stopping triggered due to NaN loss.")
+                          break
+                      patience -= 1
+                      if patience == 0:
+                          print("Early stopping triggered.")
+                          break
 
 
     def evaluate(self, data_loader, return_loss=False):

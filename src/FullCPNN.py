@@ -10,7 +10,7 @@ class FullCPNN(nn.Module):
     A five-layer Counter-Propagation Neural Network (CPNN) with:
       1) Input → Kohonen (unsupervised clustering)
       2) Kohonen → forward Grossberg → class logits (supervised classification)
-      3) Kohonen → reverse Grossberg → input reconstructions 
+      3) Kohonen → reverse Grossberg → input reconstructions
       (autoencoder-style reconstruction)
 
     Attributes:
@@ -20,19 +20,19 @@ class FullCPNN(nn.Module):
 
         output_size (int): Number of output classes.
 
-        kohonen_weights (nn.Parameter): Weight matrix 
+        kohonen_weights (nn.Parameter): Weight matrix
         for Kohonen layer (shape: hidden_size × input_size).
 
-        G_fwd (nn.Parameter): Forward Grossberg weight matrix 
+        G_fwd (nn.Parameter): Forward Grossberg weight matrix
         (shape: output_size × hidden_size).
 
-        G_rev (nn.Parameter): Reverse Grossberg weight matrix 
+        G_rev (nn.Parameter): Reverse Grossberg weight matrix
         (shape: input_size × hidden_size).
 
-        neighborhood_function (str): Type of neighborhood influence 
+        neighborhood_function (str): Type of neighborhood influence
         ('gaussian', 'triangular', or 'rectangular')
         .
-        neighborhood_size (float): Initial size (σ) of the 
+        neighborhood_size (float): Initial size (σ) of the
         neighborhood function (minimum 1).
 
         val_criterion (nn.Module): CrossEntropyLoss for classification.
@@ -50,7 +50,7 @@ class FullCPNN(nn.Module):
                  neighborhood_size: float = 3,
                  device: torch.device = None):
         """
-        Initializes the FullCPNN model with specified layer sizes 
+        Initializes the FullCPNN model with specified layer sizes
         and neighborhood function.
 
         Args:
@@ -60,19 +60,19 @@ class FullCPNN(nn.Module):
 
             output_size (int): Number of output classes.
 
-            neighborhood_function (str): Neighborhood influence function 
+            neighborhood_function (str): Neighborhood influence function
                                     ('gaussian', 'triangular', 'rectangular').
 
-            neighborhood_size (float): Initial size of 
+            neighborhood_size (float): Initial size of
             the neighborhood function (σ).
 
-            device (torch.device, optional): Computation device (CPU or CUDA). 
+            device (torch.device, optional): Computation device (CPU or CUDA).
                                              Defaults to auto-detection.
         """
         super(FullCPNN, self).__init__()
 
         # Device setup
-        self.device = device or torch.device('cuda' 
+        self.device = device or torch.device('cuda'
             if torch.cuda.is_available() else 'cpu')
 
         # Assertions to ensure positive dimension sizes
@@ -91,13 +91,13 @@ class FullCPNN(nn.Module):
             hidden_size, input_size))
         with torch.no_grad():
             # Normalize each Kohonen weight vector
-            self.kohonen_weights.data = F.normalize(self.kohonen_weights.data, 
+            self.kohonen_weights.data = F.normalize(self.kohonen_weights.data,
                 p=2, dim=1)
 
         # Initialize Grossberg weights:
-        #   - G_fwd: maps from hidden (Kohonen) to output classes 
+        #   - G_fwd: maps from hidden (Kohonen) to output classes
         #   (shape: output_size × hidden_size)
-        #   - G_rev: maps from hidden (Kohonen) to reconstruct inputs 
+        #   - G_rev: maps from hidden (Kohonen) to reconstruct inputs
         #   (shape: input_size × hidden_size)
         self.G_fwd = nn.Parameter(torch.randn(output_size, hidden_size))
         self.G_rev = nn.Parameter(torch.randn(input_size, hidden_size))
@@ -110,7 +110,7 @@ class FullCPNN(nn.Module):
         self.neighborhood_function = neighborhood_function
         self.neighborhood_size = max(1.0, float(neighborhood_size))
 
-        # Loss functions: classification (forward Grossberg) 
+        # Loss functions: classification (forward Grossberg)
         # and reconstruction (reverse Grossberg)
         self.val_criterion = nn.CrossEntropyLoss(reduction='mean')
         self.recon_criterion = nn.MSELoss(reduction='mean')
@@ -122,23 +122,23 @@ class FullCPNN(nn.Module):
         """
         Forward pass through the FullCPNN.
 
-        1) Compute best-matching unit (BMU) in Kohonen layer 
+        1) Compute best-matching unit (BMU) in Kohonen layer
         via Euclidean distance.
         2) Produce class logits via forward Grossberg: one-hot BMU → G_fwd.
         3) Produce reconstructions via reverse Grossberg: one-hot BMU → G_rev.
 
         Args:
-            x (Tensor): Input tensor of shape (batch_size, input_size) or any 
+            x (Tensor): Input tensor of shape (batch_size, input_size) or any
             shape that flattens to input_size.
 
         Returns:
-            output (Tensor): Logits for classification, 
+            output (Tensor): Logits for classification,
             shape (batch_size, output_size).
 
-            recos (Tensor): Reconstructed inputs, 
+            recos (Tensor): Reconstructed inputs,
             shape (batch_size, input_size).
 
-            winners (Tensor): Indices of winning Kohonen neurons, 
+            winners (Tensor): Indices of winning Kohonen neurons,
             shape (batch_size,).
         """
         x = self.flatten(x)
@@ -208,24 +208,24 @@ class FullCPNN(nn.Module):
     def update_grossberg(self, x, class_logits, recos, labels, winners,
                          opt_fwd, opt_rev):
         """
-        Update both Grossberg weight matrices (forward and reverse) 
+        Update both Grossberg weight matrices (forward and reverse)
         using supervised losses.
 
         Args:
-            class_logits (Tensor): Predicted logits from forward Grossberg, 
+            class_logits (Tensor): Predicted logits from forward Grossberg,
             shape (batch_size, output_size).
 
-            recos (Tensor): Reconstructed inputs from reverse Grossberg, 
+            recos (Tensor): Reconstructed inputs from reverse Grossberg,
             shape (batch_size, input_size).
 
             labels (Tensor): Ground-truth class labels, shape (batch_size,).
 
             winners (Tensor): BMU indices, shape (batch_size,).
 
-            opt_fwd (Optimizer): Optimizer for 
+            opt_fwd (Optimizer): Optimizer for
             forward Grossberg weights (G_fwd).
 
-            opt_rev (Optimizer): Optimizer for 
+            opt_rev (Optimizer): Optimizer for
             reverse Grossberg weights (G_rev).
 
         """
@@ -262,7 +262,7 @@ class FullCPNN(nn.Module):
         opt_rev.step()
 
         """
-        
+
         Placeholder backprop style updates
 
         opt_fwd.zero_grad()
@@ -297,33 +297,33 @@ class FullCPNN(nn.Module):
         """
         Trains the FullCPNN in two phases:
          1) Unsupervised Kohonen training for kohonen_epochs.
-         2) Supervised Grossberg training (both forward and reverse) 
+         2) Supervised Grossberg training (both forward and reverse)
          for grossberg_epochs.
 
-        Learning rate schedulers are applied in each phase 
+        Learning rate schedulers are applied in each phase
         using CosineAnnealingLR.
 
         Args:
-            train_loader (DataLoader): Dataloader for training data, 
+            train_loader (DataLoader): Dataloader for training data,
             yielding (x, y) or (x, _) for Kohonen phase.
 
-            val_loader (DataLoader, optional): Dataloader for validation data. 
+            val_loader (DataLoader, optional): Dataloader for validation data.
             Used in Grossberg phase if provided.
 
             kohonen_epochs (int): Number of epochs for Kohonen-only training.
 
-            grossberg_epochs (int): Number of epochs 
+            grossberg_epochs (int): Number of epochs
             for Grossberg joint training.
 
             kohonen_lr (float): Initial learning rate for Kohonen SGD optimizer.
 
-            grossberg_lr (float): Initial learning rate 
+            grossberg_lr (float): Initial learning rate
             for both Grossberg Adam optimizers.
 
-            early_stopping (bool): Whether to apply early stopping 
+            early_stopping (bool): Whether to apply early stopping
             during Grossberg phase.
 
-            patience (int): Number of epochs with no improvement 
+            patience (int): Number of epochs with no improvement
             before stopping early.
 
         Returns:
@@ -345,10 +345,10 @@ class FullCPNN(nn.Module):
         if decay_enabled:
             lambd = kohonen_epochs / math.log(sigma_0)
 
-        print('--- Phase 1: Training Kohonen (Unsupervised) ---')
+        #print('--- Phase 1: Training Kohonen (Unsupervised) ---')
         self.train()
         for epoch in range(1, kohonen_epochs + 1):
-            print(f"[Kohonen Epoch {epoch}/{kohonen_epochs}]")
+            #print(f"[Kohonen Epoch {epoch}/{kohonen_epochs}]")
 
 
             if decay_enabled:
@@ -384,10 +384,10 @@ class FullCPNN(nn.Module):
         best_val_loss = float('inf')
         init_patience = patience
 
-        print('\n--- Phase 2: Training Grossberg (Supervised) ---')
+        #print('\n--- Phase 2: Training Grossberg (Supervised) ---')
         for epoch in range(1, grossberg_epochs + 1):
             self.train()
-            print(f"[Grossberg Epoch {epoch}/{grossberg_epochs}]")
+            #print(f"[Grossberg Epoch {epoch}/{grossberg_epochs}]")
             epoch_loss = 0.0
 
             for batch_x, batch_y in train_loader:
@@ -429,17 +429,17 @@ class FullCPNN(nn.Module):
         """
         Evaluates the FullCPNN on provided data (validation or test).
 
-        Computes combined classification + reconstruction loss 
+        Computes combined classification + reconstruction loss
         and classification accuracy.
 
         Args:
             data_loader (DataLoader): DataLoader yielding (x, y) pairs.
 
-            return_loss (bool): If True, returns combined loss; 
+            return_loss (bool): If True, returns combined loss;
             otherwise returns accuracy (%).
 
         Returns:
-            float: Combined loss (if return_loss=True) 
+            float: Combined loss (if return_loss=True)
             or accuracy (%) otherwise.
         """
         if len(data_loader) == 0:

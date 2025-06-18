@@ -8,8 +8,8 @@ import torch.optim as optim
 
 class ForwardOnlyCPNN(nn.Module):
     """
-    Base implementation of a Counter-Propagation Neural Network (CPNN), 
-    combining a Kohonen self-organizing map (unsupervised) with a 
+    Base implementation of a Counter-Propagation Neural Network (CPNN),
+    combining a Kohonen self-organizing map (unsupervised) with a
     Grossberg layer (supervised).
 
     Attributes:
@@ -23,12 +23,12 @@ class ForwardOnlyCPNN(nn.Module):
 
         grossberg_weights (nn.Parameter): Weight vectors for Grossberg layer.
 
-        neighborhood_function (str): Type of neighborhood ('gaussian', 
+        neighborhood_function (str): Type of neighborhood ('gaussian',
         'triangular', or 'rectangular').
 
         neighborhood_size (float): Initial neighborhood size.
 
-        kohonen_snapshots (List[Tensor]): History of Kohonen weights 
+        kohonen_snapshots (List[Tensor]): History of Kohonen weights
         after each epoch.
 
         device (torch.device): CUDA or CPU.
@@ -38,7 +38,7 @@ class ForwardOnlyCPNN(nn.Module):
                  neighborhood_function='gaussian',
                  neighborhood_size=3, device=None):
         """
-        Initializes the ForwardOnlyCPNN model with specified layer sizes 
+        Initializes the ForwardOnlyCPNN model with specified layer sizes
         and neighborhood function.
 
         Args:
@@ -48,12 +48,12 @@ class ForwardOnlyCPNN(nn.Module):
 
             output_size (int): Number of output classes.
 
-            neighborhood_function (str): Neighborhood influence function 
+            neighborhood_function (str): Neighborhood influence function
             ('gaussian', 'triangular', 'rectangular').
 
             neighborhood_size (float): Size of the neighborhood.
 
-            device (torch.device, optional): Computation device (CPU or CUDA). 
+            device (torch.device, optional): Computation device (CPU or CUDA).
             Defaults to auto-detection.
         """
 
@@ -93,7 +93,7 @@ class ForwardOnlyCPNN(nn.Module):
         if self.neighborhood_size < 1:
             self.neighborhood_size = 1
 
-        # Used to create graphs showing the evolution 
+        # Used to create graphs showing the evolution
         # of the Kohonen weight mappings
         self.kohonen_snapshots = []
 
@@ -222,7 +222,7 @@ class ForwardOnlyCPNN(nn.Module):
 
             early_stopping (bool): Whether to use early stopping.
 
-            patience (int, optional): Epochs to wait before stopping 
+            patience (int, optional): Epochs to wait before stopping
             after no improvement.
         """
 
@@ -259,7 +259,7 @@ class ForwardOnlyCPNN(nn.Module):
             else:
                 sigma_t = sigma_0
 
-            print(f"\n[Epoch {epoch}] Starting training...")
+            #print(f"\n[Epoch {epoch}] Starting training...")
 
             self.train()
             for batch_x, batch_y in train_loader:
