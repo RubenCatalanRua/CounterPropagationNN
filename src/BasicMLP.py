@@ -1,3 +1,10 @@
+import math
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
 class BasicNN(nn.Module):
     def __init__(self, input_size, hidden_size, hidden_layers, div_layer_value, output_size, dropout_rate, device):
         super(BasicNN, self).__init__()
